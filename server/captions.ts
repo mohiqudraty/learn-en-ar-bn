@@ -135,17 +135,18 @@ async function fetchTracks(
       },
       videoId,
     }),
-    signal: AbortSignal.timeout(8000),
+    signal: AbortSignal.timeout(12000),
   });
 
   if (!response.ok) throw new Error(`player ${response.status}`);
 
   const data = (await response.json()) as PlayerResponse;
-  if (data.playabilityStatus?.status && data.playabilityStatus.status !== 'OK') {
+  const tracks = data.captions?.playerCaptionsTracklistRenderer?.captionTracks ?? [];
+  if (!tracks.length && data.playabilityStatus?.status && data.playabilityStatus.status !== 'OK') {
     throw new Error(data.playabilityStatus.status);
   }
 
-  return data.captions?.playerCaptionsTracklistRenderer?.captionTracks ?? [];
+  return tracks
 }
 
 async function fetchCues(baseUrl: string, userAgent: string): Promise<Cue[]> {
@@ -154,7 +155,7 @@ async function fetchCues(baseUrl: string, userAgent: string): Promise<Cue[]> {
 
   const response = await fetch(url, {
     headers: { 'User-Agent': userAgent },
-    signal: AbortSignal.timeout(8000),
+    signal: AbortSignal.timeout(12000),
   });
   if (!response.ok) throw new Error(`timedtext ${response.status}`);
 
