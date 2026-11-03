@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: mohi
+    runtime: node
+    plan: free
+    buildCommand: npm install -g pnpm && pnpm install --prod=false && pnpm build
+    startCommand: pnpm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: "24"
