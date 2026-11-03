@@ -51,7 +51,7 @@ app.get('/api/search', async (req, res) => {
       console.error(`Captions unavailable: ${safe}`);
       res.status(502).json({
         error: 'captions_unavailable',
-        message: 'Public captions could not be read',
+        message: safe,
       });
       return;
     }
@@ -114,6 +114,7 @@ async function runSearch(query: string, lang: Language): Promise<SearchSuccess> 
   let videosSeen = 0;
   let readable = 0;
   let calls = 0;
+  let captionFailure = 'caption failed';
 
   const tally = async (apiQuery: string, source: 'api' | 'public'): Promise<boolean> => {
     for (const step of searchSteps(lang)) {
@@ -135,7 +136,8 @@ async function runSearch(query: string, lang: Language): Promise<SearchSuccess> 
         const lookups = await mapPool(fresh, 5, (video) => lookupCaption(video, lang, query));
         for (const lookup of lookups) {
           if (lookup.status === 'match') clips.push(lookup.clip);
-          if (lookup.status !== 'error') readable += 1;
+          if (lookup.status === 'error') captionFailure = lookup.reason;
+          else readable += 1;
         }
       }
       if (clips.length >= MATCH_TARGET) break;
@@ -155,7 +157,7 @@ async function runSearch(query: string, lang: Language): Promise<SearchSuccess> 
 
   if (kept.length) return { clips: kept, notice: null };
   if (videosSeen === 0) return { clips: [], notice: 'no_videos' };
-  if (readable === 0) throw new CaptionUnavailable();
+  if (readable === 0) throw new CaptionUnavailable(captionFailure);
   return { clips: [], notice: 'no_caption_match' };
 }
 
@@ -192,8 +194,8 @@ function safeError(error: unknown): string {
 }
 
 class CaptionUnavailable extends Error {
-  constructor() {
-    super('Public captions could not be read');
+  constructor(reason: string) {
+    super(`Public captions could not be read (${reason})`);
     this.name = 'CaptionUnavailable';
   }
 }

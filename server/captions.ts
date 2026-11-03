@@ -1,3 +1,4 @@
+import https from 'node:https';
 import type { Clip, Language } from '../shared/types';
 import { findPhrase, type Cue } from '../shared/text';
 import type { VideoCandidate } from './youtube';
@@ -50,7 +51,7 @@ type TimedText = {
 export type CaptionLookup =
   | { status: 'match'; clip: Clip }
   | { status: 'miss' }
-  | { status: 'error' };
+  | { status: 'error'; reason: string };
 
 export async function lookupCaption(
   video: VideoCandidate,
@@ -58,6 +59,7 @@ export async function lookupCaption(
   query: string,
 ): Promise<CaptionLookup> {
   let sawLanguageMiss = false;
+  let reason = 'no caption tracks';
 
   for (const client of CLIENTS) {
     try {
@@ -67,6 +69,7 @@ export async function lookupCaption(
       const track = pickTrack(tracks, lang);
       if (!track || track.baseUrl.includes('exp=xpe')) {
         if (!track) sawLanguageMiss = true;
+        else reason = 'caption token blocked';
         continue;
       }
 
@@ -86,12 +89,12 @@ export async function lookupCaption(
           sentence: match.sentence,
         },
       };
-    } catch {
-      continue;
+    } catch (error) {
+      reason = error instanceof Error ? error.message : 'caption failed';
     }
   }
 
-  return sawLanguageMiss ? { status: 'miss' } : { status: 'error' };
+  return sawLanguageMiss ? { status: 'miss' } : { status: 'error', reason };
 }
 
 function pickTrack(tracks: CaptionTrack[], lang: Language): CaptionTrack | null {
@@ -116,7 +119,7 @@ async function fetchTracks(
   client: InnertubeClient,
   lang: Language,
 ): Promise<CaptionTrack[]> {
-  const response = await fetch(PLAYER_URL, {
+  const response = await youtubeRequest(PLAYER_URL, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -135,12 +138,11 @@ async function fetchTracks(
       },
       videoId,
     }),
-    signal: AbortSignal.timeout(12000),
   });
 
   if (!response.ok) throw new Error(`player ${response.status}`);
 
-  const data = (await response.json()) as PlayerResponse;
+  const data = JSON.parse(response.text) as PlayerResponse;
   const tracks = data.captions?.playerCaptionsTracklistRenderer?.captionTracks ?? [];
   if (!tracks.length && data.playabilityStatus?.status && data.playabilityStatus.status !== 'OK') {
     throw new Error(data.playabilityStatus.status);
@@ -153,13 +155,12 @@ async function fetchCues(baseUrl: string, userAgent: string): Promise<Cue[]> {
   const url = new URL(baseUrl.startsWith('http') ? baseUrl : `https:${baseUrl}`);
   url.searchParams.set('fmt', 'json3');
 
-  const response = await fetch(url, {
+  const response = await youtubeRequest(url.toString(), {
     headers: { 'User-Agent': userAgent },
-    signal: AbortSignal.timeout(12000),
   });
   if (!response.ok) throw new Error(`timedtext ${response.status}`);
 
-  const body = await response.text();
+  const body = response.text;
   if (!body.trim()) throw new Error('empty timedtext');
 
   if (body.trim().startsWith('<')) return parseXml(body);
@@ -169,6 +170,39 @@ async function fetchCues(baseUrl: string, userAgent: string): Promise<Cue[]> {
     if (event.tStartMs == null || !event.segs) return [];
     const text = event.segs.map((segment) => segment.utf8 ?? '').join('').replace(/\s+/g, ' ').trim();
     return text ? [{ startMs: event.tStartMs, text }] : [];
+  });
+}
+
+function youtubeRequest(
+  url: string,
+  init: { method?: string; headers?: Record<string, string>; body?: string },
+): Promise<{ ok: boolean; status: number; text: string }> {
+  return new Promise((resolve, reject) => {
+    const target = new URL(url);
+    const req = https.request({
+      protocol: target.protocol,
+      hostname: target.hostname,
+      path: `${target.pathname}${target.search}`,
+      method: init.method ?? 'GET',
+      headers: init.headers,
+      family: 4,
+      timeout: 12000,
+    }, (res) => {
+      const chunks: Buffer[] = [];
+      res.on('data', (chunk: Buffer) => chunks.push(chunk));
+      res.on('end', () => {
+        const status = res.statusCode ?? 0;
+        resolve({
+          ok: status >= 200 && status < 300,
+          status,
+          text: Buffer.concat(chunks).toString('utf8'),
+        });
+      });
+    });
+    req.on('timeout', () => req.destroy(new Error('youtube timeout')));
+    req.on('error', reject);
+    if (init.body) req.write(init.body);
+    req.end();
   });
 }
 
